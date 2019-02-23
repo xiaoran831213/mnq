@@ -64,5 +64,5 @@ gcta
 *.o
 *.so
 
-# R cpp config
-src/Makevars*
+# backup of R cpp config
+src/Makevars?*
