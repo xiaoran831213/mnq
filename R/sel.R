@@ -11,6 +11,7 @@
 #' @param x matrix of covariat
 #' @param ... additional arguments
 #'   * msl: maximum number of selections
+#'   * sby: select by (NLK, MSE, etc.)
 #' @return the selected model:
 #'   * par: parameter estimates
 #'   * rpt: performance report
@@ -18,18 +19,21 @@
 fwd <- function(y, v, x=NULL, w=NULL, ...)
 {
     dot <- list(...)
-    msl <- if(is.null(dot$msl)) Inf else dot$msl
+    msl <- if(is.null(dot$msl)) Inf   else dot$msl
+    sby <- if(is.null(dot$sby)) 'nlk' else dot$sby
+    vld <- if(is.null(dot$vld)) list(y=y, v=v, x=x) else dot$vld
     N <- length(y)                      # sample size
     K <- length(v)                      # kernel count
 
+    ## model selection
     kpl <- v                            # kernel pool
     ksl <- list()                       # selected
     par <- mnq(y, NULL, x)$par          # NULL model
     rpt <- vpd(y, NULL, x, par)
     while(length(kpl) > 0 && length(ksl) < msl)
     {
-        nlk <- rpt$nlk
-        ## grow the model by adding one kernel
+        err <- rpt[[sby]]
+        ## grow the model
         mds <- lapply(names(kpl), function(n)
         {
             ksl <- c(ksl, kpl[n])
@@ -37,8 +41,11 @@ fwd <- function(y, v, x=NULL, w=NULL, ...)
             vcs <- par[c("EPS", names(ksl))]
             rpt <- vpd(y, ksl, x, par, ...)
 
-            ## if any variance component other than EPS and the new
-            ## kernel is non-positive
+            ## reject the growth if the new model is worse
+            if(rpt[[sby]] > err)
+                return(NULL)
+
+            ## if any VC for other than EPS and new kernel is negative
             nps <- which(vcs[-c(1, length(vcs))] < 0)
             for(i in rev(nps))
             {
@@ -46,22 +53,26 @@ fwd <- function(y, v, x=NULL, w=NULL, ...)
                 par <- mnq(y, ksl[-i], x, ...)$par
                 vcs <- par[c("EPS", names(ksl[-i]))]
                 rpt <- vpd(y, ksl[-i], x, par, ...)
-                if(rpt$nlk < nlk && all(vcs > 0))
+                if(rpt[[sby]] < err && all(vcs > 0))
+                {
+                    nps <- integer()
+                    ksl <- ksl[-1]
                     break
+                }
             }
-
-            ## discard if the new model is worse
-            if(any(vcs < 0) || rpt$nlk > nlk)
+            ## discard if the adjusted model is STILL worse
+            if(length(nps) > 0)
                 return(NULL)
-            list(par=par, rpt=vpd(y, ksl, x, par, ...), ksl=ksl)
+
+            list(par=par, rpt=rpt, ksl=ksl)
         })
         mds <- mds[!sapply(mds, is.null)]
-        
-        ## some new models to choose from?
+
+        ## some condidate growth to choose from?
         if(length(mds) > 0)
         {
-            ## rank the new models by NLK, and select the best
-            idx <- order(sapply(mds, function(.) .$rpt$nlk))[1]
+            ## rank the new models, select the best
+            idx <- order(sapply(mds, function(.) .$rpt[[sby]]))[1]
             mds <- mds[[idx]]
             par <- mds$par
             rpt <- mds$rpt
@@ -73,10 +84,5 @@ fwd <- function(y, v, x=NULL, w=NULL, ...)
         else
             break
     }
-
-    par[setdiff(names(v), names(par))] <- 0.0
-    vcs <- par[c('EPS', names(v))]
-    fix <- par[c('X00', colnames(x))]
-    par <- c(fix, vcs)
-    list(par=par, rpt=rpt, msl=msl)
+    list(par=par, rpt=rpt)
 }

@@ -1,4 +1,5 @@
 #include "RcppArmadillo.h"
+#include <stdio.h>
 using namespace Rcpp;
 using namespace arma;
 
@@ -40,21 +41,31 @@ SEXP amo_mnq(SEXP _y, SEXP _V, SEXP _X, SEXP _w)
 	V += v[i] * w[i];
     // Rcpp::Rcout << "V = " << V << std::endl;
     fmat A;
-    bool psd=true;
-    try
+    int err = 0;
+    if(err == 0 && !inv_sympd(A, V))
     {
-	A = inv_sympd(V);
+	err = 1;
     }
-    catch(std::runtime_error ex)
-    {
-	psd = false;
-    }
-    if(!psd) // fall back to pinv
+    if(err == 1 && !pinv(A, V) ) // fall back to pinv
     {
 	// Rcpp::Rcout << "fallback to pinv" << std::endl;
-	A = pinv(V);
+	err = 2;
     }
-    ret["psd"] = psd;
+    if(err == 2) // fall back to ordinary least square
+    {
+	fmat b;
+	fmat r = y;
+	if(X.n_cols > 0)
+	{
+	    b = X * pinv(X.t() * X) * y;
+	    r = y - X * b;
+	}
+	ret["vcs"] = as_scalar(accu(r % r) / (N - X.n_cols));
+	ret["fix"] = b;
+    }
+    ret["err"] = err;
+    if(err == 2)
+	return(Rcpp::wrap(ret));
     // Rcpp::Rcout << "A = " << A << std::endl;
 
     /* Get P, and Q = I - P, then R V_i and R y, where R = V^Q */

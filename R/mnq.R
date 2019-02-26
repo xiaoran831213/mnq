@@ -45,6 +45,8 @@
 rln_mnq <- function(y., v., x.=NULL, w.=NULL)
 {
     K <- length(v.)
+    N <- length(y.)
+    err <- 0
 
     ## initial weights
     if(is.null(w.))
@@ -53,8 +55,31 @@ rln_mnq <- function(y., v., x.=NULL, w.=NULL)
     ## sum of V_i, i = 1 .. K by initial weights
     V <- .vsum(v., w.)
     A <- try(chol2inv(chol(V)), silent=TRUE)
+
+    ## fallback to generalized inverse
     if(inherits(A, 'try-error'))
-       A <- .ginv(V)
+    {
+        err <- 1
+        A <- try(.ginv(V), silent=TRUE)
+    }
+
+    ## fallback to linear regression
+    if(inherits(A, 'try-error'))
+    {
+        err <- 2
+        if(is.null(x.))
+        {
+            b <- NULL
+            e <- sum(y.^2) / N
+        }
+        else
+        {
+            b <- .ginv(tcrossprod(x.)) %*% tcrossprod(x., y.)
+            e <- sum((y. - x. %*% b)^2) / (N - NCOL(x.))
+            names(b) <- colnames(x.)
+        }
+        return(list(vcs=c(EPS=e), fix=b, err=err))
+    }
     
     ## get P, Q = I - P, and R V_i and R y, where R = V^Q
     Rv <- list()
@@ -109,7 +134,7 @@ rln_mnq <- function(y., v., x.=NULL, w.=NULL)
         b <- NULL
 
     ## pack up
-    list(vcs=w, fix=b)
+    list(vcs=w, fix=b, err=err)
 }
 
 #' Cpp MINQUE
