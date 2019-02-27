@@ -251,22 +251,22 @@ mnq <- function(y, v=NULL, x=NULL, w=NULL, ...)
     }
 
     ## fixed effects
-    fx0 <- rt0$fix
+    fx0 <- drop(rt0$fix)
 
     td <- Sys.time() - t0; units(td) <- 'secs'; td <- as.numeric(td)
     ## print('end MINQUE')
 
     ## pack up and return: estimates
-    names(vc0) <- names(v)
-    names(fx0) <- colnames(x)
-    par <- c(fx0, vc0)
-
+    vcs <- drop(vc0)
+    fxs <- drop(fx0)
+    names(vcs) <- names(v)
+    names(fxs) <- colnames(x)
+    par <- c(fxs, vcs)
+    
     ## reports & return
-    ret=list(par=par, rtm=td)
+    ret <- list(par=par, vcs=vcs, fxs=fxs, rtm=td)
     if(rpt)
-    {
         ret$rpt <- vpd(y, v[-1], x, par, ...)
-    }
     ret
 }
 
@@ -343,4 +343,80 @@ vpd <- function(y, v=NULL, x=NULL, w, ...)
                       zeb=zeb, zel=zel, yeb=yeb, yel=yel,
                       ycb=ycb, ycl=ycl, zcb=zcb, zcl=zcl)
     rpt
+}
+
+#' Fixed Effect Getter
+#'
+#' by convention, fixed effect coefficients preceeds the
+#' variance components, and the first variance component
+#' is named 'EPS'.
+#' 
+#' @param x a vector of parameters
+#' @return fixed effect coefficients
+#' @export
+fx <- function(x)
+{
+    i <- grep('eps', names(x), TRUE)
+    if(length(i) > 0)
+        x[seq(1, i - 1)]
+    else
+        x
+}
+
+#' Fixed Effect Setter
+#'
+#' by convention, fixed effect coefficients preceeds the
+#' variance components, and the first variance component
+#' is named 'EPS'.
+#' 
+#' @param x a vector of parameters
+#' @param value to be assign to fixed effect coefficients
+#' @export
+`fx<-` <- function(x, value)
+{
+    i <- grep('eps', names(x), TRUE)
+    if(length(i) > 0)
+        i <- seq(1, i - 1)
+    else
+        i <- seq_along(x)
+    x[i] <- rep(value, l=length(i))
+    x
+}
+
+#' Variance Component Getter
+#'
+#' by convention, fixed effect coefficients preceeds the
+#' variance components, and the first variance component
+#' is named 'EPS'.
+#' 
+#' @param x a vector of parameters
+#' @return variance components
+#' @export
+vc <- function(x)
+{
+    i <- grep('eps', names(x), TRUE)
+    if(length(i) > 0)
+        x[seq(i, length(x))]
+    else
+        NULL
+}
+
+#' Variance Component Setter
+#'
+#' by convention, fixed effect coefficients preceeds the
+#' variance components, and the first variance component
+#' is named 'EPS'.
+#' 
+#' @param x a vector of parameters
+#' @param value to assign to variance components
+#' @export
+`vc<-` <- function(x, value)
+{
+    i <- grep('eps', names(x), TRUE)
+    if(length(i) > 0)
+        i <- seq(i, length(x))
+    else
+        i <- seq_along(x)
+    x[i] <- rep(value, l=length(i))
+    x
 }

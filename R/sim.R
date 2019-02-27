@@ -112,7 +112,13 @@ sm3 <- function(N=2000, P=2 * N, ...)
 {
     dot <- list(...)
     set.seed(dot$seed)
-    zs <- replicate(5,  as.matrix(scale(matrix(rnorm(N * P), N, P))), simplify=FALSE)
+
+    ## true vcs
+    w <- c(EPS=3.00, LN1=0.67,  LN2=0.36,  LN3=3.57,  LN4=0.66,  LN5=0.46, LN6=1.11)
+
+    ## data
+    zs <- replicate(length(w) - 1,
+                    as.matrix(scale(matrix(rnorm(N * P), N, P))), simplify=FALSE)
     ks <- lapply(zs, function(z) tcrossprod(z) / P)
     names(ks) <- sprintf("LN%d", seq_along(ks))
     ks <- c(list(EPS=diag(N)), ks)
@@ -122,12 +128,11 @@ sm3 <- function(N=2000, P=2 * N, ...)
     
     ## true covariance
     x <- cbind(X00=rep(1, N))
-    ## w <- round(c(0.5 * length(ks), rchisq(length(ks) - 1, 1)), 2)
-    w <- c(EPS=3.00, LN1=0.67,  LN2=0.36,  LN3=3.57,  LN4=0.66,  LN5=0.46) 
     names(w) <- names(ks)
     S <- .vsum(ks, w)
     S <- with(svd(S), u %*% diag(pmax(0, d)) %*% t(v))
-    
+
+    ## response
     y <- mvn(1, -1, S)
 
     ## minque
@@ -137,6 +142,8 @@ sm3 <- function(N=2000, P=2 * N, ...)
         rpt <- vpd(y, v, x, par, ...)
     })
 
+    kcv <- fcv(y, v, x, ...)
+    
     ful <- within(list(),
     {
         par <- mnq(y, v, x, ...)$par
@@ -144,6 +151,7 @@ sm3 <- function(N=2000, P=2 * N, ...)
         rpt <- vpd(y, v, x, par, ...)
     })
 
-    sel <- fwd(y, v, x, cpp=TRUE, ...)
-    c(list(sel=sel), list(ref=ref), list(ful=ful))
+    sel <- fwd(y, v, x, ...)
+
+    list(sel=sel, ref=ref, ful=ful, kcv=kcv)
 }
