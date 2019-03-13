@@ -11,6 +11,7 @@
 #' where the VCs will always be preserved.
 #' @param x matrix of covariat
 #' @param ... additional arguments
+#'   * tlr: threshold of likelihood ratio, in p-value.
 #'   * msl: maximum number of selections
 #'   * sby: select by (NLK, MSE, etc.)
 #'   * vld: validation data set - a list of \code{y} and \code{v},
@@ -23,12 +24,14 @@ fwd <- function(y, v, x=NULL, w=NULL, ...)
 {
     dot <- list(...)
     msl <- if(is.null(dot$msl)) Inf   else dot$msl
+    tlr <- if(is.null(dot$tlr)) 0.05  else dot$tlr
     sby <- if(is.null(dot$sby)) 'nlk' else dot$sby
     vld <- if(is.null(dot$vld)) list(y=y, v=v, x=x) else dot$vld
 
     N <- length(y)                      # sample size
     K <- length(v)                      # kernel count
     L <- if(is.null(x)) 0 else NCOL(x)  # covariate
+    TLR <- stats::qchisq(1.0 - tlr, 0.5)
 
     ## initialization
     ksl <- intersect(names(v), names(w)) # ini selection
@@ -51,6 +54,7 @@ fwd <- function(y, v, x=NULL, w=NULL, ...)
     while(length(kpl) > 0 && length(ksl) < msl)
     {
         err <- rpt[[sby]]
+        nlk <- rpt$nlk
         ## try grow the model by one kernel
         mds <- lapply(kpl, function(n)
         {
@@ -88,21 +92,26 @@ fwd <- function(y, v, x=NULL, w=NULL, ...)
         mds <- mds[!sapply(mds, is.null)]
 
         ## some condidate growth to choose from?
-        if(length(mds) > 0)
-        {
-            ## rank the new models, select the best
-            i <- order(sapply(mds, function(.) .$rpt[[sby]]))[1]
-            m <- mds[[i]]
-            par <- m$par
-            rpt <- m$rpt
-            ksl <- m$ksl
-
-            ## update kernel pool
-            kpl <- setdiff(kpl, ksl)
-        }
-        else
+        if(length(mds) < 1)
             break
+        ## rank the new models, select the best
+        i <- order(sapply(mds, function(.) .$rpt[[sby]]))[1]
+        m <- mds[[i]]
+        par <- m$par
+        rpt <- m$rpt
+        ksl <- m$ksl
+
+        ## cross the threshold of likelihood?
+        LRT <- N * (nlk - rpt$nlk)
+        cat(sprintf("LRT=%7f, TLR=%7f\n", LRT, TLR))
+        if(LRT < TLR)
+            break
+
+        ## update kernel pool
+        kpl <- setdiff(kpl, ksl)
     }
+
+    rpt$nsl <- length(vc(par))
     list(par=par, rpt=rpt)
 }
 
@@ -133,6 +142,7 @@ fcv <- function(y, v=NULL, x=NULL, k=5, ...)
     mds <- list()                       # models
     for(i in seq(k))
     {
+        cat(sprintf("CV: %02d\n", i))
         m <- f != i                     # training
         yi <- y[m]
         vi <- lapply(v, `[`, m, m)
@@ -153,8 +163,10 @@ fcv <- function(y, v=NULL, x=NULL, k=5, ...)
     ## decide maximum selection
     par <- lapply(mds, `[[`, 'par')
     vcs <- lapply(par, vc)
+    rpt <- do.call(rbind, lapply(mds, `[[`, 'rpt'))
+    len <- sapply(vcs, length)
     msl <- round(mean(sapply(vcs, length)))
-
+    
     ## selection by complete data
     fwd(y, v, x, msl=msl, ...)
 }
