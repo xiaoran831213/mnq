@@ -264,7 +264,7 @@ mnq <- function(y, v=NULL, x=NULL, w=NULL, ...)
     par <- c(fxs, vcs)
     
     ## reports & return
-    ret <- list(par=par, vcs=vcs, fxs=fxs, rtm=td)
+    ret <- list(par=par, rtm=c(rtm=td))
     if(rpt)
         ret$rpt <- vpd(y, v[-1], x, par, ...)
     ret
