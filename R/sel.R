@@ -11,9 +11,9 @@
 #' where the VCs will always be preserved.
 #' @param x matrix of covariat
 #' @param ... additional arguments
+#' 
 #'   * tlr: threshold of likelihood ratio, in p-value.
 #'   * msl: maximum number of selections
-#'   * sby: select by (NLK, MSE, etc.)
 #'   * vld: validation data set - a list of \code{y} and \code{v},
 #'   if null, the validation is done on the training set.
 #' @return the selected model:
@@ -25,7 +25,6 @@ fwd <- function(y, v, x=NULL, w=NULL, ...)
     dot <- list(...)
     msl <- if(is.null(dot$msl)) Inf   else dot$msl
     tlr <- if(is.null(dot$tlr)) 0.05  else dot$tlr
-    sby <- if(is.null(dot$sby)) 'nlk' else dot$sby
     vld <- if(is.null(dot$vld)) list(y=y, v=v, x=x) else dot$vld
 
     N <- length(y)                      # sample size
@@ -53,8 +52,9 @@ fwd <- function(y, v, x=NULL, w=NULL, ...)
     ## model selection
     while(length(kpl) > 0 && length(ksl) < msl)
     {
-        err <- rpt[[sby]]
         nlk <- rpt$nlk
+        yel <- rpt$yel
+        ycl <- rpt$ycl
         ## try grow the model by one kernel
         mds <- lapply(kpl, function(n)
         {
@@ -65,7 +65,10 @@ fwd <- function(y, v, x=NULL, w=NULL, ...)
             rpt <- with(vld, vpd(y, v[ksl], x, par, ...))
 
             ## reject the growth if the new model is worse
-            if(rpt[[sby]] > err || par[n] < 0 || par['EPS'] < 0)
+            if(rpt$nlk > nlk ||
+               rpt$yel > yel ||
+               rpt$ycl < ycl ||
+               par[n] < 0 || par['EPS'] < 0)
                 return(NULL)
 
             ## if any VC for other than EPS and new kernel is negative
@@ -76,10 +79,12 @@ fwd <- function(y, v, x=NULL, w=NULL, ...)
                 par <- mnq(y, v[ksl[-i]], x, ...)$par
                 vcs <- vc(par)
                 rpt <- with(vld, vpd(y, v[ksl[-i]], x, par, ...))
-                if(rpt[[sby]] < err && all(vcs > 0))
+                if(rpt$nlk < nlk &&
+                   rpt$yel < yel &&
+                   rpt$ycl > ycl && all(vcs > 0))
                 {
                     nps <- integer()
-                    ksl <- ksl[-1]
+                    ksl <- ksl[-i]
                     break
                 }
             }
@@ -95,7 +100,7 @@ fwd <- function(y, v, x=NULL, w=NULL, ...)
         if(length(mds) < 1)
             break
         ## rank the new models, select the best
-        i <- order(sapply(mds, function(.) .$rpt[[sby]]))[1]
+        i <- order(sapply(mds, function(.) .$rpt$nlk))[1]
         m <- mds[[i]]
         par <- m$par
         rpt <- m$rpt
