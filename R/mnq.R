@@ -47,7 +47,7 @@ rln_mnq <- function(y., v., x.=NULL, w.=NULL)
     K <- length(v.)
     N <- length(y.)
     err <- 0
-
+    
     ## initial weights
     if(is.null(w.))
         w. <- rep(1/K, K)
@@ -173,6 +173,7 @@ amo_mnq <- function(y., v., x.=NULL, w.=NULL)
 #' @param x matrix of covariat
 #' @param w vector of initial paramters, fixed effect by followed
 #' by variance components
+#' @param zcp enable zero capping? (def=0)
 #' 
 #' @param ... additional options
 #'   * tol: convergence tolerence (def=1e-5)
@@ -185,7 +186,7 @@ amo_mnq <- function(y., v., x.=NULL, w.=NULL)
 #'   * rtm: running time
 #'
 #' @export
-mnq <- function(y, v=NULL, x=NULL, w=NULL, ...)
+mnq <- function(y, v=NULL, x=NULL, w=NULL, zcp=0, ...)
 {
     dot <- list(...)
     tol <- if(is.null(dot$tol)) 1e-5 else dot$tol
@@ -256,8 +257,12 @@ mnq <- function(y, v=NULL, x=NULL, w=NULL, ...)
     td <- Sys.time() - t0; units(td) <- 'secs'; td <- as.numeric(td)
     ## print('end MINQUE')
 
+
     ## pack up and return: estimates
     vcs <- drop(vc0)
+    ## zero capping?
+    if(zcp)
+        vcs <- pmax(vcs, 0)
     fxs <- drop(fx0)
     names(vcs) <- names(v)
     names(fxs) <- colnames(x)
