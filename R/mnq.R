@@ -34,107 +34,178 @@
 #' of K kernels \code{V_1 ... V_K}, and an optional matrix of
 #' covariate, solve the variance components and fixed coefficients.
 #'
-#' @param y. vector of response variable
-#' @param v. list of kernel matrices
-#' @param x. matrix of covariate
-#' @param w. initial values for variance components
+#' @param Y vector of response variable
+#' @param K list of kernel matrices
+#' @param X matrix of covariate
+#' @param a initial guess for variance components
 #'
 #' @return list of results:
 #'   * vcs: vector of variance component estimates
 #'   * fix: vector of fixed coeficient estimates
-rln_mnq <- function(y., v., x.=NULL, w.=NULL)
+rln_mnq <- function(Y, K, X=NULL, a=NULL)
 {
-    K <- length(v.)
-    N <- length(y.)
-    err <- 0
+    L <- length(K)
+    N <- length(Y)
     
     ## initial weights
-    if(is.null(w.))
-        w. <- rep(1/K, K)
+    if(is.null(a))
+        a <- rep(1, L)
 
-    ## sum of V_i, i = 1 .. K by initial weights
-    V <- .vsum(v., w.)
-    A <- try(chol2inv(chol(V)), silent=TRUE)
-
-    ## fallback to generalized inverse
-    if(inherits(A, 'try-error'))
-    {
-        err <- 1
-        A <- try(.ginv(V), silent=TRUE)
-    }
-
-    ## fallback to linear regression
-    if(inherits(A, 'try-error'))
-    {
-        err <- 2
-        if(is.null(x.))
-        {
-            b <- NULL
-            e <- sum(y.^2) / N
-        }
-        else
-        {
-            b <- .ginv(tcrossprod(x.)) %*% tcrossprod(x., y.)
-            e <- sum((y. - x. %*% b)^2) / (N - NCOL(x.))
-            names(b) <- colnames(x.)
-        }
-        return(list(vcs=c(EPS=e), fix=b, err=err))
-    }
+    ## V = a_0 K_0 + a_1 K_1 + ... + a_L K_L
+    ## A = V^{-1}
+    V <- Reduce(`+`, mapply(`*`, K, a, SIMPLIFY=FALSE))
+    A <- chol2inv(chol(V)) # this may fail
     
     ## get P, Q = I - P, and R V_i and R y, where R = V^Q
+    
+    ## Q = V^{-1} - V^{-1}X (X'V^{-1}X)^{+} X'V^{-1}
+    ## get Q K_0, Q K_1, ... Q K_L, and Qy
     Rv <- list()
-    if(is.null(x.))
+    if(is.null(X) || length(X) == 0)
     {
-        ## no X, P = 0, Q = I, R V_i = V^ I V_i = V^V_i
+        ## no X, Q = V^{-1} = A
         for(i in seq.int(K))
-            Rv[[i]] <- A %*% v.[[i]]
-        Ry <- A %*% y.
+            Rv[[i]] <- A %*% K[[i]]
+        Ry <- A %*% Y
     }
     else
     {
-        ## P = X (X'V^X)^ (V^X)'
-        B <- solve(V, x.)                # V^X
-        C <- .ginv(t(x.) %*% B) %*% t(B) # (X'V^X)^ (V^X)'
-        P <- x. %*% C
-
-        ## R V_i = V^ (I - P) V_i = V^ (V_i - P V_i)
+        ## Q = A - B (X'B )^{+} B'
+        B <- A %*% X
+        Q <- A - B %*% .ginv(t(X) %*% B) %*% t(B)
         for(i in seq.int(K))
-            Rv[[i]] <- A %*% (v.[[i]] - P %*% v.[[i]])
-        Ry <- A %*% (y. - P %*% y.)
+            Rv[[i]] <- Q %*% K[[i]]
+        Ry <- Q %*% Y
     }
 
-    ## u_i = e' V_i e = y' R V_i R y
-    u<- double(K)
-    for(i in seq.int(K))
-        u[i] <- sum(Ry * v.[[i]] %*% Ry)
+    ## get y' Q K_l Q y = (Qy)' K_l (Qy), for l=0 ... L
+    u <- double(L)
+    for(i in seq(L))
+        u[i] <- t(Ry) %*% K[[i]] %*% Ry  # y'Q K_l Qy
 
-    ## Caculate F: F_ij = Tr(R V_i R V_j)
-    F <- matrix(.0, K, K)
-    for(i in seq.int(K))
+    ## get Tr(QK_l QK_m) = | (QK_l)*(QK_m)'|_f
+    F <- matrix(.0, L, L)
+    for(i in seq(L))
     {
-        for(j in seq.int(K)[-1L])
+        for(j in seq(i + 1, l= L - i))
         {
-            F[i, j] <- sum(Rv[[i]] * Rv[[j]])
+            F[i, j] <- sum(Rv[[i]] * t(Rv[[j]]))
             F[j, i] <- F[i, j]
         }
-        F[i, i] <- sum(Rv[[i]] * Rv[[i]])
+        F[i, i] <- sum(Rv[[i]] * t(Rv[[i]]))
     }
 
-    ## [s2_1, .., s2_K]' = [yA1y, .., yAKy]' = solve(F, u) = F^u
+    ## solve:
+    ## [Tr(QK_0 QK_0) ... Tr(QK_0 QK_L)]  [s_0^2] = [y'Q K_0 Q y]
+    ## [Tr(QK_1 QK_0) ... Tr(QK_1 QK_L)]  [s_1^2] = [y'Q K_1 Q y]
+    ## ...            ...            ...    ...          ...
+    ## [Tr(QK_L QK_0) ... Tr(QK_L QK_L)]  [s_L^2] = [y'Q K_L Q y]
+    ## for s_0^2, s_1^2, ... s_L^2
+    w <- drop(.ginv(F) %*% u)
+
+    ## GLS: beta = (X'V^{-1}X)^+ X'V^{-1}y
+    if(length(X) > 0)
+    {
+        V <- Reduce(`+`, mapply(`*`, K, w, SIMPLIFY=FALSE))
+        IX <- solve(V, X) # V^{-1}X
+        b <- drop(.ginv(t(X) %*% IX) %*% t(IX) %*% Y)
+        names(b) <- colnames(X)
+    }
+    else
+        b <- NULL
+    
+    ## pack up
+    list(vcs=w, fix=b, ini=a)
+}
+
+#' MINQUE 0
+#'
+#' A special case  of MINQUE, where the initial guess  for noise ($\alpha_0$) is
+#' set to 1, and the rest be 0, thus,
+#'
+#' $V = a_0 K_0 + a_1... + a_L K_L = I$,
+#'
+#' which speed up computation.
+#'
+#' @param Y vector of obseved outcomes
+#' @param K list of kernels, the first must be diagonal I(N x N).
+#' @param X matrix of covariates
+rln_mq0 <- function(Y, K, X=NULL)
+{
+    L <- length(K)
+    N <- length(Y)
+
+    ## sum of V_i, i = 1 .. K by initial weights
+    ## V = 1 * K_1 + 0*K_2 ... 0*K_L = I  (since K_0 = I)
+
+    ## Q = V^{-1} - V^{-1}X (X'V^{-1}X)^{+} X'V^{-1}
+    ## get Q K_1, Q K_2, ... Q K_L, and Qy
+    Rv <- list()
+    if(is.null(X) || length(X) == 0)
+    {
+        ## No X, Q = V^{-1} = I => Q K_l = K_l, l = 1 ... L
+        Rv <- K
+        Ry <- Y # Q y = y
+    }
+    else
+    {
+        ## Q = V^{-1} - V^{-1}X (X'V^{-1}X)^+ X'V^{-1}
+        ##   = I - X (X'X)^{+} X',   (V^{-1} = I)
+        ##
+        ## Q K = K - X (X'X)^{+} (X' K)     (K: K_1 ... K_L)
+        ##
+        ## Q <- diag(N) - X %*% .ginv(t(X) %*% X) %*% t(X)
+        B <- X %*% .ginv(t(X) %*% X)
+        for(l in seq(L))
+        {
+            ## Rv[[l]] <- Q %*% K[[l]] # QK_1 ... QK_L, Q K_0=Q
+            Rv[[l]] <- K[[l]] - B %*% crossprod(X, K[[l]])
+        }
+        Ry <- Y - B %*% t(X) %*% Y 
+        ## Ry <- Q %*% Y               # Qy
+    }
+    
+    ## get y' Q K_l Q y = (Qy)' K_l (Qy), for l=0 ... L
+    u <- double(L)
+    for(l in seq(L))
+        u[l] <- t(Ry) %*% K[[l]] %*% Ry  # y'Q K_l Qy
+
+    ## get Tr(QK_l QK_m) = | (QK_l)*(QK_m)'|_f
+    F <- matrix(.0, L, L)
+    for(i in seq(L))
+    {
+        for(j in seq.int(i + 1, l = L - i))
+        {
+            F[i, j] <- sum(Rv[[i]] * t(Rv[[j]]))
+            F[j, i] <- F[i, j]
+        }
+        F[i, i] <- sum(Rv[[i]] * t(Rv[[i]]))
+    }
+
+    ## solve:
+    ## [Tr(QK_0 QK_0) ... Tr(QK_0 QK_L)]  [s_0^2] = [y'Q K_0 Q y]
+    ## [Tr(QK_1 QK_0) ... Tr(QK_1 QK_L)]  [s_1^2] = [y'Q K_1 Q y]
+    ## ...            ...            ...    ...          ...
+    ## [Tr(QK_L QK_0) ... Tr(QK_L QK_L)]  [s_L^2] = [y'Q K_L Q y]
+    ## for s_0^2, s_1^2, ... s_L^2
     w <- .ginv(F) %*% u 
-    ##  bypass A1, .. A_K in (Rao. 1971)
 
     ## GLS for fixed effects
-    if(!is.null(x.))
+    ## beta = (X'V^{-1}X)^+ X'V^{-1}y
+    ## approximate V with diag(V)
+    if(length(X) > 0)
     {
-        b <- C %*% y.
-        names(b) <- colnames(x.)
+        ## V <- Reduce("+", mapply("*", K, w, SIMPLIFY=FALSE))
+        ## D <- solve(V, X) # V^{-1}X
+        D <- X / drop(sapply(K, diag) %*% w)
+        b <- drop(.ginv(t(X) %*% D) %*% t(D) %*% Y)
+        names(b) <- colnames(X)
     }
     else
         b <- NULL
 
     ## pack up
-    list(vcs=w, fix=b, err=err)
+    list(vcs=w, fix=b)
 }
 
 #' Cpp MINQUE
@@ -146,21 +217,22 @@ rln_mnq <- function(y., v., x.=NULL, w.=NULL)
 #' The function is implemented by RcppArmadillo, slightly faster then
 #' R-language.
 #'
-#' @param y. vector of response variable
-#' @param v. list of kernel matrices
-#' @param x. matrix of covariate
-#' @param w. initial values for variance components
+#' @param Y vector of response variable
+#' @param K list of kernel matrices
+#' @param X matrix of covariate
+#' @param W initial values for variance components
 #' @return list of results, includs:
 #'   * vcs: vector of variance component estimates
 #'   * fix: vector of fixed coeficient estimates
 #'
 #' @seealso \code{rln_mnq}
-amo_mnq <- function(y., v., x.=NULL, w.=NULL)
+amo_mnq <- function(Y, K, X=NULL, W=NULL, ...)
 {
-    y. <- as.matrix(y.)
-    x. <- if(is.null(x.)) matrix(0, 0, 0) else as.matrix(x.)
-    w. <- if(is.null(w.)) matrix(0, 0, 0) else as.matrix(w.)
-    .Call('amo_mnq', y., v., x., w., PACKAGE='mnq')
+    opt <- list(...)
+    Y <- as.matrix(Y)
+    X <- if(is.null(X)) matrix(0, 0, 0) else as.matrix(X)
+    W <- if(is.null(W)) matrix(0, 0, 0) else as.matrix(W)
+    .Call('amo_mnq', Y, K, X, W, opt, PACKAGE='mnq')
 }
 
 
@@ -173,55 +245,64 @@ amo_mnq <- function(y., v., x.=NULL, w.=NULL)
 #' @param x matrix of covariat
 #' @param w vector of initial paramters, fixed effect by followed
 #' by variance components
-#' @param zcp enable zero capping? (def=0)
 #' 
 #' @param ... additional options
+#'
+#    * zcp enable zero capping? (def=0)
+#'   * eht: halt on error (def=TRUE)
 #'   * tol: convergence tolerence (def=1e-5)
 #'   * itr: iterations allowed (def=Inf)
 #'   * cpp: use C++ function for speed (def=TRUE)
 #'   * quiet: TRUE to omit messages (def=FALSE)
+#'   * zht: halt on negative variance component (def=!zcp)
+#'
+#'   * itc: prepend a intercept term to fixed terms? (def=TRUE)
 #' 
 #' @return list of results:
+#' 
 #'   * par: variance component esimates and fixed coefficients
 #'   * rtm: running time
 #'
 #' @export
-mnq <- function(y, v=NULL, x=NULL, w=NULL, zcp=0, ...)
+mnq <- function(y, v=NULL, x=NULL, w=NULL, ...)
 {
     dot <- list(...)
-    tol <- if(is.null(dot$tol)) 1e-5 else dot$tol
-    cpp <- if(is.null(dot$cpp)) TRUE else dot$cpp
-    itr <- if(is.null(dot$itr))   20 else dot$itr
+    tol <- if(is.null(dot$tol))   1e-5 else dot$tol
+    cpp <- if(is.null(dot$cpp))   TRUE else dot$cpp
+    itr <- if(is.null(dot$itr))     20 else dot$itr
     vbs <- if(is.null(dot$quiet)) TRUE else !dot$quiet
-    rpt <- if(is.null(dot$rpt)) FALSE else dot$rpt
-    
+    zcp <- if(is.null(dot$zcp))      0 else dot$zcp
+    zht <- if(is.null(dot$zht))   !zcp else dot$zht
+    eht <- if(is.null(dot$eht))   TRUE else dot$eht
+    itc <- if(is.null(dot$itc))   TRUE else dot$itc
+    rpt <- if(is.null(dot$rpt))  FALSE else dot$rpt
+
     ## append noise kernel
     N <- length(y)                      # sample size
-    v <- c(list(EPS=diag(N)), v)
+    v <- c(list(EPS=diag(N)), v)        # first kernel is random noise
     K <- length(v)                      # kernel count
 
+    ## sanity check: kernel size
+    stopifnot(all(sapply(v, dim) == N))
+    
     ## prepend intercept if necessary
-    if(is.null(x) || !any(grepl('X00', colnames(x)[1], TRUE)))
+    if(itc)
         x <- cbind(X00=rep(1.0, N), x)
     x <- as.matrix(x)
     y <- as.matrix(y)
-
+    
     ## print('begin MINQUE')
     t0 <- Sys.time()
 
     ## initialize variance components
-    .m <- lm(y ~ x - 1)
-    .s <- sum(residuals(.m)^2) / (N - NCOL(x))
     if(is.null(w))
-        vc0 <- rep(.s / K, K)
-    else
-        vc0 <- w[seq(NCOL(x) + 1, length(w))]
-    vc1 <- c(.s, rep(0, K - 1))
-    rm(.m, .s)
+        w <- rep(1, K)          # equal by default
+    vc0 <- c(w, rep(0, K))[1:K] # 0 for unspecified components
+    vc1 <- c(1, rep(0, K - 1))
 
     ## MINQUE implementation
-    .mq <- if(cpp) amo_mnq else rln_mnq
-    
+    imp <- if(cpp) amo_mnq else rln_mnq
+
     ## messages
     ps0 <- function(...) paste(..., collapse="")
     sp0 <- function(...) ps0(sprintf(...))
@@ -233,11 +314,14 @@ mnq <- function(y, v=NULL, x=NULL, w=NULL, zcp=0, ...)
 
     dff <- max(abs(vc1 - vc0))
     ca0(ps0(sp0('%03d', itr), sp0("%6.3f", vc0), sp0("%7.1e", dff)))
+    neg <- (vc0 < 0) * 1
     while(itr > 0)
     {
         ## call MINQUE core function, skip kernels with zero weights.
-        rt0 <- .mq(y, v, x, vc0)
-
+        rt0 <- imp(y, v, x, vc0)
+        if(rt0$err && eht)
+            stop("MNQ: halt on error: ", rt0$err)
+        
         vc1 <- rt0$vcs
         dff <- max(abs(vc1 - vc0))
 
@@ -248,15 +332,17 @@ mnq <- function(y, v=NULL, x=NULL, w=NULL, zcp=0, ...)
         if(dff < tol)
             break
         vc0 <- vc1
-        itr <- itr - 1
-    }
 
+        ## halt on negative variance component?
+        neg <- neg + (vc0 < 0)
+        if(zht > 0 & max(neg) >= zht)
+            break
+
+        itr <- itr - 1 # next round
+    }
+    
     ## fixed effects
     fx0 <- drop(rt0$fix)
-
-    td <- Sys.time() - t0; units(td) <- 'secs'; td <- as.numeric(td)
-    ## print('end MINQUE')
-
 
     ## pack up and return: estimates
     vcs <- drop(vc0)
@@ -267,13 +353,21 @@ mnq <- function(y, v=NULL, x=NULL, w=NULL, zcp=0, ...)
     names(vcs) <- names(v)
     names(fxs) <- colnames(x)
     par <- c(fxs, vcs)
-    
+
     ## reports & return
-    ret <- list(par=par, rtm=c(rtm=td))
     if(rpt)
-        ret$rpt <- vpd(y, v[-1], x, par, ...)
-    ret
+        rpt <- list(rpt=vpd(y, v[-1], x, par, ...))
+    else
+        rpt <- NULL
+    par <- list(par=par)
+
+    td <- Sys.time() - t0; units(td) <- 'secs'; td <- as.numeric(td)
+    ## print('end MINQUE')
+    rtm <- list(rtm=c(rtm=td))
+
+    c(par, rpt, rtm)
 }
+
 
 #' Variance component model prediction
 #' 
@@ -304,7 +398,7 @@ vpd <- function(y, v=NULL, x=NULL, w, ...)
         x <- cbind(X00=rep(1, N), x)
         M <- M + 1
     }
-    
+
     xb <- if(M > 0) x %*% fix else 0    # x beta
     e <- y - xb                         # fix effect residual
     SST <- sum(e^2) / (N - M)           # sum square total
@@ -339,12 +433,13 @@ vpd <- function(y, v=NULL, x=NULL, w, ...)
     ## negative likelihood
     ldt <- with(determinant(V), modulus * sign) / N
     eae <- sum(Ae * e) / N    # e^T V^{-1} e
-    ## nlk <- .5 * (eae + ldt + log(2 * pi))
+    ## 2*nlk <- eae + ldt + N*log(2*pi)
     nlk <- eae + ldt
     attributes(nlk) <- NULL
-    
+    aic <- 2 * sum(abs(w) > 1e-6) + nlk * N
+
     ## return
-    rpt <- data.frame(N=N, hsq=hsq, SST=SST, nlk=nlk,
+    rpt <- data.frame(N=N, hsq=hsq, SST=SST, nlk=nlk, aic=aic,
                       zeb=zeb, zel=zel, yeb=yeb, yel=yel,
                       ycb=ycb, ycl=ycl, zcb=zcb, zcl=zcl)
     rpt

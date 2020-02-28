@@ -7,13 +7,13 @@ using namespace arma;
 
 // [[Rcpp::depends(RcppArmadillo)]]
 
-// MINQUE
+// MINQUE-0
 //
 // y vector of response variable
 // V list of kernels
 // w vector of initial weights (variance components).
 // X matrix of covariate
-SEXP amo_mnq(SEXP _Y, SEXP _K, SEXP _X, SEXP _w, SEXP _opt)
+SEXP amo_mn0(SEXP _Y, SEXP _K, SEXP _X, SEXP _opt)
 {
     // // [[Rcpp::export]]
     fmat Y = as<fmat>(_Y);	// column vector of response
@@ -28,39 +28,15 @@ SEXP amo_mnq(SEXP _Y, SEXP _K, SEXP _X, SEXP _w, SEXP _opt)
     for(int i = 0; i < M; i++)
 	K[i] = as<fmat>(_l[i]);
 
-    /* initial weights */
-    fmat w = as<fmat>(_w);
-    if(w.n_cols == 0)
-	w = fmat(M, 1, fill::ones);
-    // Rcpp::Rcout << "w=" << w << std::endl;
-
     /* covariate */
     fmat X = as<fmat>(_X);
     // Rcpp::Rcout << "X=" << X << std::endl;
 
-    // V: weighted sum of kernels, and A=V^ (V inverse)
-    fmat V(N, N, fill::zeros);
-    for(int i = 0; i < M; i++)
-	V += K[i] * w[i];
-    // Rcpp::Rcout << "V = " << V << std::endl;
-    fmat A;
-    if(!inv_sympd(A, V))
-    {
-	fmat b;
-	fmat r = Y;
-	if(X.n_cols > 0)
-	{
-	    b = pinv(X.t() * X) * X.t() * Y;
-	    r = Y - X * b;
-	}
-        w = w * 0;
-        w[0] = as_scalar(accu(r % r) / (N - X.n_cols));
-	ret["vcs"] = w;
-	ret["fix"] = b;
-        ret["err"] = 1;
-	return(Rcpp::wrap(ret));
-    }
-    // Rcpp::Rcout << "A = " << A << std::endl;
+    // w_0 = 1, w_1 = 0, ... , w_L = 0
+    // V = w_0 * K_1 + w_1 * K_2 ... w_L * K_L = I  (since K_0 = I)
+
+    // Q = V^{-1} - V^{-1}X (X'V^{-1}X)^{+} X'V^{-1}
+    // get Q K_1, Q K_2, ... Q K_L, and Qy
 
     /* Get P, and Q = I - P, then R V_i and R Y, where R = V^Q */
     std::vector<fmat> RV(M);
@@ -68,30 +44,33 @@ SEXP amo_mnq(SEXP _Y, SEXP _K, SEXP _X, SEXP _w, SEXP _opt)
     fmat B, C, P;
     if(X.n_cols == 0)
     {
+        /* No X, Q = V^{-1} = I ==> Q K_l = K_l, l = 1 ... L */
 	for(int i = 0; i < M; i++)
-	    RV[i] = A * K[i];
-	Ry = A * Y;
+	    RV[i] = K[i];
+	Ry = Y;
     }
     else
     {
-	// B = V^X = solve(V, X)
-	// P = X (X'V^X)^ (V^X)' = X (X'B)^ B'
-	B = A * X;
-	C = pinv(X.t() * B) * B.t();
-	P = X * C;
+        // Q = V^{-1} - V^{-1}X (X'V^{-1}X)^+ X'V^{-1}
+        //   = I - X (X'X)^{+} X'           (V^{-1} = I)
+        //
+        // Q K = K - X (X'X)^{+} (X' K)     (K_1 ... K_L)
+        //
+        // Q <- diag(N) - X %*% .ginv(t(X) %*% X) %*% t(X)
+	B = X * pinv(X.t() * X);
 	for(int i = 0; i < M; i++)
-	    RV[i] = A * (K[i] - P * K[i]);
-	Ry = A * (Y - P * Y);
+	    RV[i] = K[i] - B * (X.t() * K[i]);
+	Ry = Y - B * (X.t() * Y);
     }
     // Rcpp::Rcout << "Ry=" << Ry << std::endl;
-    
-    // u_i = e' V_i e = y' R V_i R y
+
+    // get y' Q K_l Q y = (Qy)' K_l (Qy), for l=0 ... L
     fmat u(M, 1);
     for(int i = 0; i < M; i++)
 	u[i] = as_scalar((Ry.t() * K[i] * Ry));
     // Rcpp::Rcout << "u=" << u << std::endl;
 	    
-    // F_{i,j} = Tr(R V_i R V_j)
+    // get Tr(QK_l QK_m) = | (QK_l)*(QK_m)'|_f
     fmat F(M, M);
     for(int i = 0; i < M; i++)
     {
@@ -105,8 +84,14 @@ SEXP amo_mnq(SEXP _Y, SEXP _K, SEXP _X, SEXP _w, SEXP _opt)
     }
     // Rcpp::Rcout << "F=" << F << std::endl;
 
-    /* Solve variance components */
-    ret["vcs"] = pinv(F) * u;
+    /* solve:
+    [Tr(QK_0 QK_0) ... Tr(QK_0 QK_L)]  [s_0^2] = [y'Q K_0 Q y]
+    [Tr(QK_1 QK_0) ... Tr(QK_1 QK_L)]  [s_1^2] = [y'Q K_1 Q y]
+    ...            ...            ...    ...          ...
+    [Tr(QK_L QK_0) ... Tr(QK_L QK_L)]  [s_L^2] = [y'Q K_L Q y]
+    for s_0^2, s_1^2, ... s_L^2 */
+    fmat w(M, 1);
+    w = pinv(F) * u;
 
     int gls = as<int>(opt["gls"]);
     // Rcpp::Rcout << "GLS=" << gls << std::endl;
@@ -114,15 +99,24 @@ SEXP amo_mnq(SEXP _Y, SEXP _K, SEXP _X, SEXP _w, SEXP _opt)
     {
         if(gls > 1)
         {
-            V = K[0] * w[0];
+            fmat V(K[0] * w[0]);
             for(int i = 1; i < M; i++)
                 V += K[i] * w[i];
             B = solve(V, X, solve_opts::fast + solve_opts::likely_sympd);
             ret["fix"] = pinv(X.t() * B) * B.t() * Y;
         }
         else
-            ret["fix"] = C * Y;
+        {
+            fmat D(N, 1, fill::zeros);
+            for(int i = 0; i < M; i++)
+                D += w[i] * K[i].diag();
+            fmat C = X.each_col() / D;
+            // Rcpp::Rcout << "D=" << D << std::endl;
+            // Rcpp::Rcout << "C=" << C << std::endl;
+            ret["fix"] = pinv(X.t() * C) * C.t() * Y;
+        }
     }
+    ret["vcs"] = w;
     ret["err"] = 0;
     return(Rcpp::wrap(ret));
 }
