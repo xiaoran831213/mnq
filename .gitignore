@@ -35,8 +35,11 @@ vignettes/*.pdf
 # Shiny token, see https://shiny.rstudio.com/articles/shinyapps.html
 rsconnect/
 
-# temporary simulation scripts
-sim.sh
+# simulations on HPCC
+sim/R
+sim/run
+sim/dwn
+sim/sim.sh
 
 # emacs's back
 *~
@@ -57,8 +60,7 @@ _region_.tex
 
 							
 
-# gcta temporary files
-gcta
+
 
 # cpp libraries
 *.o
