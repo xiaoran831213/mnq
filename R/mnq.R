@@ -4,9 +4,10 @@
 #'
 #' A simplified copy of MASS::ginv
 #'
-#' @param x matrix to be inverted
+#' @param x positive definite matrix to be inverted
 #' @return generalized inverse of \code{x}
-.ginv <- function(x)
+#' @noRd
+inv <- function(x)
 {
     with(svd(x),
     {
@@ -23,27 +24,39 @@
 #' @param v list of  kernels
 #' @param w vector of weights
 #' @return sum of \code{v} weighted by \code{w}
-.vsum <- function(v, w)
-{
-    Reduce(`+`, mapply(`*`, v, w, SIMPLIFY=FALSE))
-}
+#' @noRd
+vsm <- function(v, w)  Reduce(`+`, mapply(`*`, v, w, SIMPLIFY=FALSE))
 
-#' R-Language MINQUE
+#' MINQUE in R language
 #'
-#' Given a model specified by a response variable \code{y}, a series
-#' of K kernels \code{V_1 ... V_K}, and an optional matrix of
-#' covariate, solve the variance components and fixed coefficients.
+#' Fit  an linear  mixed model  (LMM) by  MINQUE, given  the vector  of response
+#' \code{\bold{y}}, the list of L kernels \code{\bold{K}_1 ...  \bold{K}_L}, and
+#' (optional) covariate(s) in \code{\bold{X}}.
 #'
-#' @param Y vector of response variable
-#' @param K list of kernel matrices
-#' @param X matrix of covariate
-#' @param a initial guess for variance components
+#' @param Y vector of the response variable;
+#' @param K list of the L kernel matrices;
+#' @param X matrix of the covariate(s);
+#' @param a vector of the initial guess of variance components.
 #'
-#' @return list of results:
-#'   * vcs: vector of variance component estimates
-#'   * fix: vector of fixed coeficient estimates
-rln_mnq <- function(Y, K, X=NULL, a=NULL)
+#' @return a list of results and context: \itemize{
+#'   \item{vcs: }{estimated variance components};
+#'   \item{fix: }{estimated fixed effect coeficient};
+#'   \item{rtm: }{running time};
+#'   \item{err: }{error code}.
+#'   \item{the input data: }{Y, K, X, and a}.}
+#'
+#' If MINQUE  fails because of  the weighted sum  of kernels being  not positive
+#' semi definit, an  error code of 2  is assigned to \code{err}  in the returned
+#' list, otherwise, \code{err} is set to 0.
+#'
+#' In most LMM the first kernel  \bold{K}_1 is a noise kernel (identity matrix),
+#' MINQUE does not enforce such rule, but MINQUE-0 does.
+#' 
+#' @seealso \code{link{rln_mq0}} for the special high speed MINQUE-0.
+rln_mnq <- function(Y, K, X=NULL, a=NULL, ...)
 {
+    tm <- Sys.time() # timer start
+
     L <- length(K)
     N <- length(Y)
     
@@ -51,13 +64,12 @@ rln_mnq <- function(Y, K, X=NULL, a=NULL)
     if(is.null(a))
         a <- rep(1, L)
 
-    ## V = a_0 K_0 + a_1 K_1 + ... + a_L K_L
-    ## A = V^{-1}
+    ## V = a_0 K_0 + a_1 K_1 + ... + a_L K_L, A = V^{-1}
     V <- Reduce(`+`, mapply(`*`, K, a, SIMPLIFY=FALSE))
     A <- chol2inv(chol(V)) # this may fail
     
     ## get P, Q = I - P, and R V_i and R y, where R = V^Q
-    
+    ##
     ## Q = V^{-1} - V^{-1}X (X'V^{-1}X)^{+} X'V^{-1}
     ## get Q K_0, Q K_1, ... Q K_L, and Qy
     Rv <- list()
@@ -72,7 +84,7 @@ rln_mnq <- function(Y, K, X=NULL, a=NULL)
     {
         ## Q = A - B (X'B )^{+} B'
         B <- A %*% X
-        Q <- A - B %*% .ginv(t(X) %*% B) %*% t(B)
+        Q <- A - B %*% inv(t(X) %*% B) %*% t(B)
         for(i in seq.int(K))
             Rv[[i]] <- Q %*% K[[i]]
         Ry <- Q %*% Y
@@ -101,37 +113,52 @@ rln_mnq <- function(Y, K, X=NULL, a=NULL)
     ## ...            ...            ...    ...          ...
     ## [Tr(QK_L QK_0) ... Tr(QK_L QK_L)]  [s_L^2] = [y'Q K_L Q y]
     ## for s_0^2, s_1^2, ... s_L^2
-    w <- drop(.ginv(F) %*% u)
+    w <- drop(inv(F) %*% u)
 
     ## GLS: beta = (X'V^{-1}X)^+ X'V^{-1}y
     if(length(X) > 0)
     {
         V <- Reduce(`+`, mapply(`*`, K, w, SIMPLIFY=FALSE))
         IX <- solve(V, X) # V^{-1}X
-        b <- drop(.ginv(t(X) %*% IX) %*% t(IX) %*% Y)
+        b <- drop(inv(t(X) %*% IX) %*% t(IX) %*% Y)
         names(b) <- colnames(X)
     }
     else
         b <- NULL
     
+    ## timer stop
+    tm <- Sys.time() - tm; units(tm) <- 'secs'; tm <- as.numeric(tm)
+
     ## pack up
-    list(vcs=w, fix=b, ini=a)
+    list(vcs=w, fix=b, rtm=tm, Y=Y, K=K, X=X, a=a)
 }
 
-#' MINQUE 0
+#' MINQUE 0 in R language
 #'
-#' A special case  of MINQUE, where the initial guess  for noise ($\alpha_0$) is
-#' set to 1, and the rest be 0, thus,
+#' A special case of MINQUE, where  the foremost kernel \eqn{K_1} is an identity
+#' kernel matrix that models noise, and the initial guess of variance components
+#' are 1 for  the foremost kernel (\eqn{a_1=1}),  and 0 for the  rest of kernels
+#' (\eqn{a_l=0, l=2 \dots L}).
 #'
-#' $V = a_0 K_0 + a_1... + a_L K_L = I$,
+#' In this special case, the initial covariance is simplifed to identity matirx
 #'
-#' which speed up computation.
+#' \deqn{V = a_1 K_1 + a_2 K_2 ... + a_L K_L = I_{N \times N}},
 #'
-#' @param Y vector of obseved outcomes
-#' @param K list of kernels, the first must be diagonal I(N x N).
-#' @param X matrix of covariates
+#' which speeds up  the computation considerably since  the spectral decompotion
+#' of identity matrix \eqn{I_{N \times N}} takes no time.
+#'
+#' @param Y vector of the dependent variable;
+#' @param K list of the kernels, the first must be identity I(N x N);
+#' @param X matrix of the covariates.
+#'
+#' MINQUE-0 requires the first kernel to be identity \eqn{K_1 = I_{N \times N}}.
+#' Since the  initial guess of variance  components is now fixed  to \eqn{(1, 0,
+#' ... 0)}, the paramter \code{a} in standard MINQUE is dropped.
+#' @seealso rln_mnq
 rln_mq0 <- function(Y, K, X=NULL)
 {
+    tic <- proc.time() # timer start
+
     L <- length(K)
     N <- length(Y)
 
@@ -154,21 +181,21 @@ rln_mq0 <- function(Y, K, X=NULL)
         ##
         ## Q K = K - X (X'X)^{+} (X' K)     (K: K_1 ... K_L)
         ##
-        ## Q <- diag(N) - X %*% .ginv(t(X) %*% X) %*% t(X)
-        B <- X %*% .ginv(t(X) %*% X)
+        ## Q <- diag(N) - X %*% inv(t(X) %*% X) %*% t(X)
+        B <- X %*% inv(crossprod(X))
         for(l in seq(L))
         {
             ## Rv[[l]] <- Q %*% K[[l]] # QK_1 ... QK_L, Q K_0=Q
             Rv[[l]] <- K[[l]] - B %*% crossprod(X, K[[l]])
         }
-        Ry <- Y - B %*% t(X) %*% Y 
+        Ry <- Y - B %*% crossprod(X, Y)
         ## Ry <- Q %*% Y               # Qy
     }
     
     ## get y' Q K_l Q y = (Qy)' K_l (Qy), for l=0 ... L
     u <- double(L)
     for(l in seq(L))
-        u[l] <- t(Ry) %*% K[[l]] %*% Ry  # y'Q K_l Qy
+        u[l] <- crossprod(Ry, K[[l]]) %*% Ry  # y'Q K_l Qy
 
     ## get Tr(QK_l QK_m) = | (QK_l)*(QK_m)'|_f
     F <- matrix(.0, L, L)
@@ -176,10 +203,11 @@ rln_mq0 <- function(Y, K, X=NULL)
     {
         for(j in seq.int(i + 1, l = L - i))
         {
-            F[i, j] <- sum(Rv[[i]] * t(Rv[[j]]))
+            ## F[i, j] <- sum(Rv[[i]] * t(Rv[[j]]))
+            F[i, j] <- sum(Rv[[i]] * Rv[[j]])
             F[j, i] <- F[i, j]
         }
-        F[i, i] <- sum(Rv[[i]] * t(Rv[[i]]))
+        F[i, i] <- sum(Rv[[i]] * Rv[[i]])
     }
 
     ## solve:
@@ -188,7 +216,7 @@ rln_mq0 <- function(Y, K, X=NULL)
     ## ...            ...            ...    ...          ...
     ## [Tr(QK_L QK_0) ... Tr(QK_L QK_L)]  [s_L^2] = [y'Q K_L Q y]
     ## for s_0^2, s_1^2, ... s_L^2
-    w <- .ginv(F) %*% u 
+    w <- inv(F) %*% u 
 
     ## GLS for fixed effects
     ## beta = (X'V^{-1}X)^+ X'V^{-1}y
@@ -198,15 +226,19 @@ rln_mq0 <- function(Y, K, X=NULL)
         ## V <- Reduce("+", mapply("*", K, w, SIMPLIFY=FALSE))
         ## D <- solve(V, X) # V^{-1}X
         D <- X / drop(sapply(K, diag) %*% w)
-        b <- drop(.ginv(t(X) %*% D) %*% t(D) %*% Y)
+        b <- drop(inv(t(X) %*% D) %*% t(D) %*% Y)
         names(b) <- colnames(X)
     }
     else
         b <- NULL
 
+    ## timer stop
+    tm <- proc.time() - tic
+
     ## pack up
-    list(vcs=w, fix=b)
+    list(vcs=w, fix=b, rtm=tm, Y=Y, K=K, X=X)
 }
+
 
 #' Cpp MINQUE
 #'
@@ -217,9 +249,9 @@ rln_mq0 <- function(Y, K, X=NULL)
 #' The function is implemented by RcppArmadillo, slightly faster then
 #' R-language.
 #'
-#' @param Y vector of response variable
-#' @param K list of kernel matrices
-#' @param X matrix of covariate
+#' @param Y vector of the response variable;
+#' @param K list of the kernel matrices;
+#' @param X matrix of the covariate(s);
 #' @param W initial values for variance components
 #' @return list of results, includs:
 #'   * vcs: vector of variance component estimates
@@ -248,14 +280,13 @@ amo_mnq <- function(Y, K, X=NULL, W=NULL, ...)
 #' 
 #' @param ... additional options
 #'
-#    * zcp enable zero capping? (def=0)
-#'   * eht: halt on error (def=TRUE)
+#'   * zcp: enable zero capping? (def=0)
+#'   * stt: compute test statistics?
+#'   * err: halt on error (def=TRUE)
 #'   * tol: convergence tolerence (def=1e-5)
 #'   * itr: iterations allowed (def=Inf)
 #'   * cpp: use C++ function for speed (def=TRUE)
-#'   * quiet: TRUE to omit messages (def=FALSE)
 #'   * zht: halt on negative variance component (def=!zcp)
-#'
 #'   * itc: prepend a intercept term to fixed terms? (def=TRUE)
 #' 
 #' @return list of results:
@@ -267,19 +298,22 @@ amo_mnq <- function(Y, K, X=NULL, W=NULL, ...)
 mnq <- function(y, v=NULL, x=NULL, w=NULL, ...)
 {
     dot <- list(...)
-    tol <- if(is.null(dot$tol))   1e-5 else dot$tol
-    cpp <- if(is.null(dot$cpp))   TRUE else dot$cpp
-    itr <- if(is.null(dot$itr))     20 else dot$itr
-    vbs <- if(is.null(dot$quiet)) TRUE else !dot$quiet
-    zcp <- if(is.null(dot$zcp))      0 else dot$zcp
-    zht <- if(is.null(dot$zht))   !zcp else dot$zht
-    eht <- if(is.null(dot$eht))   TRUE else dot$eht
-    itc <- if(is.null(dot$itc))   TRUE else dot$itc
-    rpt <- if(is.null(dot$rpt))  FALSE else dot$rpt
+    eps <- dot$eps %||% TRUE # need noise kernel?
+    itc <- dot$itc %||% TRUE # need intercept?
+    tol <- dot$tol %||% 1e-4 # convergence
+    cpp <- dot$cpp %||% FALSE
+    itr <- dot$itr %||% 0x10
+    zcp <- if(is.null(dot$zcp)) TRUE else dot$zcp
+    zht <- if(is.null(dot$zht)) !zcp else dot$zht
+    stt <- dot$rpt %||% TRUE
+    err <- dot$err %||% TRUE
+    rpt <- dot$rpt %||% FALSE
+    par <- dot$par %||% TRUE
 
     ## append noise kernel
     N <- length(y)                      # sample size
-    v <- c(list(EPS=diag(N)), v)        # first kernel is random noise
+    if(eps)
+        v <- c(list(EPS=diag(N)), v) # first kernel is random noise
     K <- length(v)                      # kernel count
 
     ## sanity check: kernel size
@@ -290,13 +324,16 @@ mnq <- function(y, v=NULL, x=NULL, w=NULL, ...)
         x <- cbind(X00=rep(1.0, N), x)
     x <- as.matrix(x)
     y <- as.matrix(y)
-    
+
     ## print('begin MINQUE')
-    t0 <- Sys.time()
+    tic <- Sys.time()
 
     ## initialize variance components
     if(is.null(w))
-        w <- rep(1, K)          # equal by default
+    {
+        rt0 <- mq0(y, v, x) # equal by default
+        w <- rt0$vcs
+    }
     vc0 <- c(w, rep(0, K))[1:K] # 0 for unspecified components
     vc1 <- c(1, rep(0, K - 1))
 
@@ -306,7 +343,7 @@ mnq <- function(y, v=NULL, x=NULL, w=NULL, ...)
     ## messages
     ps0 <- function(...) paste(..., collapse="")
     sp0 <- function(...) ps0(sprintf(...))
-    ca0 <- function(...) if(vbs) cat(..., "\n", sep="")
+    ca0 <- function(...) cat(..., "\n", sep="")
     hdr <- ps0("ITR", sp0("%6s", names(v)), sp0("%7s", "MDF"))
 
     ## print the header
@@ -319,9 +356,8 @@ mnq <- function(y, v=NULL, x=NULL, w=NULL, ...)
     {
         ## call MINQUE core function, skip kernels with zero weights.
         rt0 <- imp(y, v, x, vc0)
-        if(rt0$err && eht)
+        if(!is.null(rt0$err) && err)
             stop("MNQ: halt on error: ", rt0$err)
-        
         vc1 <- rt0$vcs
         dff <- max(abs(vc1 - vc0))
 
@@ -340,32 +376,36 @@ mnq <- function(y, v=NULL, x=NULL, w=NULL, ...)
 
         itr <- itr - 1 # next round
     }
-    
-    ## fixed effects
-    fx0 <- drop(rt0$fix)
-
-    ## pack up and return: estimates
-    vcs <- drop(vc0)
-    ## zero capping?
-    if(zcp)
+    fix <- drop(rt0$fix)     # fixed effects
+    vcs <- drop(vc0)         # random effects
+    if(zcp)                  # zero capping?
         vcs <- pmax(vcs, 0)
-    fxs <- drop(fx0)
     names(vcs) <- names(v)
-    names(fxs) <- colnames(x)
-    par <- c(fxs, vcs)
+    names(fix) <- colnames(x)
 
     ## reports & return
     if(rpt)
         rpt <- list(rpt=vpd(y, v[-1], x, par, ...))
     else
         rpt <- NULL
-    par <- list(par=par)
 
-    td <- Sys.time() - t0; units(td) <- 'secs'; td <- as.numeric(td)
+    if(par)
+        par <- list(par=c(fix, vcs))
+    else
+        par <- NULL
+
+    ## test
+    if(stt)
+        stt <- list(stt=qst(y, v[-1], x, fix, vcs[-1]))
+    else
+        stt <- NULL
+    toc <- Sys.time()
+
+    rtm <- toc - tic; units(rtm) <- 'secs'; rtm <- as.numeric(rtm)
     ## print('end MINQUE')
-    rtm <- list(rtm=c(rtm=td))
-
-    c(par, rpt, rtm)
+    rtm <- list(rtm=c(rtm=rtm))
+    
+    c(par, rpt, rtm, stt)
 }
 
 
@@ -408,10 +448,10 @@ vpd <- function(y, v=NULL, x=NULL, w, ...)
     ## h2c <- unname(1 - vcs[1] / sum(vcs)) # hsq 3
     
     ## predicted random effects
-    V <- unname(.vsum(v, vcs))
+    V <- unname(vsm(v, vcs))
     A <- try(chol2inv(chol(V)), silent=TRUE)
     if(inherits(A, 'try-error'))
-       A <- .ginv(V)
+       A <- inv(V)
     Ae <- A %*% e
     
     zub <- (V - diag(vcs[1], N)) %*% Ae   # use BLUP
@@ -443,80 +483,4 @@ vpd <- function(y, v=NULL, x=NULL, w, ...)
                       zeb=zeb, zel=zel, yeb=yeb, yel=yel,
                       ycb=ycb, ycl=ycl, zcb=zcb, zcl=zcl)
     rpt
-}
-
-#' Fixed Effect Getter
-#'
-#' by convention, fixed effect coefficients preceeds the
-#' variance components, and the first variance component
-#' is named 'EPS'.
-#' 
-#' @param x a vector of parameters
-#' @return fixed effect coefficients
-#' @export
-fx <- function(x)
-{
-    i <- grep('eps', names(x), TRUE)
-    if(length(i) > 0)
-        x[seq(1, i - 1)]
-    else
-        x
-}
-
-#' Fixed Effect Setter
-#'
-#' by convention, fixed effect coefficients preceeds the
-#' variance components, and the first variance component
-#' is named 'EPS'.
-#' 
-#' @param x a vector of parameters
-#' @param value to be assign to fixed effect coefficients
-#' @export
-`fx<-` <- function(x, value)
-{
-    i <- grep('eps', names(x), TRUE)
-    if(length(i) > 0)
-        i <- seq(1, i - 1)
-    else
-        i <- seq_along(x)
-    x[i] <- rep(value, l=length(i))
-    x
-}
-
-#' Variance Component Getter
-#'
-#' by convention, fixed effect coefficients preceeds the
-#' variance components, and the first variance component
-#' is named 'EPS'.
-#' 
-#' @param x a vector of parameters
-#' @return variance components
-#' @export
-vc <- function(x)
-{
-    i <- grep('eps', names(x), TRUE)
-    if(length(i) > 0)
-        x[seq(i, length(x))]
-    else
-        NULL
-}
-
-#' Variance Component Setter
-#'
-#' by convention, fixed effect coefficients preceeds the
-#' variance components, and the first variance component
-#' is named 'EPS'.
-#' 
-#' @param x a vector of parameters
-#' @param value to assign to variance components
-#' @export
-`vc<-` <- function(x, value)
-{
-    i <- grep('eps', names(x), TRUE)
-    if(length(i) > 0)
-        i <- seq(i, length(x))
-    else
-        i <- seq_along(x)
-    x[i] <- rep(value, l=length(i))
-    x
 }
