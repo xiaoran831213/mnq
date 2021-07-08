@@ -305,14 +305,14 @@ mnq <- function(y, v=NULL, x=NULL, w=NULL, ...)
     itr <- dot$itr %||% 0x10
     zcp <- if(is.null(dot$zcp)) TRUE else dot$zcp
     zht <- if(is.null(dot$zht)) !zcp else dot$zht
-    stt <- dot$rpt %||% TRUE
+    stt <- dot$stt %||% TRUE
     err <- dot$err %||% TRUE
     rpt <- dot$rpt %||% FALSE
     par <- dot$par %||% TRUE
 
     ## append noise kernel
     N <- length(y)                      # sample size
-    if(eps)
+    if(!eps)
         v <- c(list(EPS=diag(N)), v) # first kernel is random noise
     K <- length(v)                      # kernel count
 
@@ -320,7 +320,7 @@ mnq <- function(y, v=NULL, x=NULL, w=NULL, ...)
     stopifnot(all(sapply(v, dim) == N))
     
     ## prepend intercept if necessary
-    if(itc)
+    if(!itc)
         x <- cbind(X00=rep(1.0, N), x)
     x <- as.matrix(x)
     y <- as.matrix(y)
@@ -396,7 +396,7 @@ mnq <- function(y, v=NULL, x=NULL, w=NULL, ...)
 
     ## test
     if(stt)
-        stt <- list(stt=qst(y, v[-1], x, fix, vcs[-1]))
+        stt <- list(stt=qst(y, v, x, fix, vcs))
     else
         stt <- NULL
     toc <- Sys.time()
